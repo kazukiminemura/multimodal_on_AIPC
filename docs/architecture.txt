@@ -1,27 +1,68 @@
-Overview
-- A web or chat client communicates with the backend via HTTPS and WebSocket/SSE for real-time updates.
-- An API Gateway handles authentication, rate limiting, and routing to internal services.
-- The Orchestrator service manages conversation state, prepares prompts, and coordinates LLM and image generation flows.
+## 1. Repository Layout
+```
+multimodal_on_AIPC/
+|-- src/app/
+|   |-- main.py              # FastAPI entry point with startup hooks
+|   |-- routes.py            # HTTP router (`POST /chat`, health checks TBD)
+|   |-- orchestrator.py      # Conversation store and flow control
+|   |-- prompt_manager.py    # System + developer prompt assembly
+|   |-- llm_client.py        # DeepSeek inference wrapper
+|   |-- image_client.py      # Stable Diffusion inference wrapper
+|   |-- model_downloader.py  # Auto-download helper for model weights
+|   |-- config.py            # Environment-driven settings
+|   `-- schemas.py           # Pydantic models shared across layers
+|-- docs/                    # Requirements and architecture docs
+|-- requirements.txt         # Python dependencies
+|-- Readme.md                # Setup instructions
+|-- models/ (optional)       # Cached weights when auto-download is enabled
+`-- tests/ (planned)         # Future automated tests
+```
 
-Core Components
-- Prompt Manager: maintains system/developer prompts, templates, and context assembly logic.
-- LLM Inference: DeepSeek-R1-Distill-Qwen-1.5B-int4-cw-ov served via optimized runtime (e.g., TensorRT/ONNX Runtime) on dedicated GPU/CPU nodes, returning structured JSON (assistant_response + image_prompt).
-- Image Inference: Stable Diffusion v1.5 service (Diffusers or WebUI-compatible API) consuming image_prompt payloads and producing images.
-- Asset Storage: object storage (S3/GCS/local NAS) for generated images and metadata, providing signed URLs for clients.
-- Conversation Store: Redis for short-term session state, PostgreSQL for persistent history and analytics.
-- Job Queue: Redis Queue or RabbitMQ to decouple long-running image generation tasks from request/response cycle.
+## 2. Startup Flow
+1. `uvicorn app.main:app --app-dir src` spins up the FastAPI application.
+2. `app/main.py` registers the router and triggers `ensure_models_async` on startup.
+3. `model_downloader.py` checks `Settings` to decide whether to fetch DeepSeek and Stable Diffusion weights from Hugging Face into `MODELS_CACHE_DIR`.
+4. The first incoming request instantiates `ChatOrchestrator`, which loads configuration and prepares clients for LLM and image services.
 
-Data Flow
-- Client sends user message → API Gateway → Orchestrator.
-- Orchestrator composes prompt via Prompt Manager → LLM Inference.
-- LLM returns JSON; Orchestrator validates schema.
-  - If image_prompt present: enqueue job to Image Inference via Job Queue.
-  - If no image_prompt: respond immediately with assistant_response.
-- Image Inference generates image → stores asset → returns URL to Orchestrator.
-- Orchestrator streams assistant_response and image URL(s) back to client.
+## 3. Runtime Components
+- **ChatOrchestrator**: Coordinates prompt construction, conversation history, and downstream calls. Stores recent exchanges per user in memory (deque capped by `CONVERSATION_HISTORY_LIMIT`).
+- **DeepSeekClient**: Sends assembled messages to the DeepSeek inference endpoint (REST/OpenAI-compatible). Falls back to mock responses when `USE_MOCKS=true`.
+- **StableDiffusionClient**: Calls a Stable Diffusion v1.5 API (Diffusers/WebUI) with prompts from the LLM output; returns job ID and URLs.
+- **PromptManager**: Injects system/developer prompts, appends history, and builds the message list required by the LLM.
+- **ModelDownloader**: Uses `huggingface_hub.snapshot_download` to stage model weights (INT4 LLM, Stable Diffusion) in a deterministic directory structure.
+- **Settings**: Centralizes configuration (endpoints, tokens, cache paths, flags) sourced from environment variables.
 
-Operational Concerns
-- Monitoring stack (Prometheus, Grafana, ELK) collects metrics and logs from all services.
-- Autoscaling policies scale LLM and diffusion workers based on request rate and GPU utilization.
-- Canary deployments and model versioning enable controlled rollout and rollback.
-- Safety filters (NSFW/abuse detection) applied pre- and post-generation using CLIP-based classifiers.
+## 4. Request Flow
+1. Client sends JSON to `POST /chat` via HTTP or through a gateway.
+2. FastAPI validates payload against `ChatRequest` (user ID + message).
+3. Orchestrator merges system prompts and session history, then calls `DeepSeekClient.generate`.
+4. LLM returns `assistant_response` plus optional `image_prompt`. Response is validated using Pydantic.
+5. If `image_prompt` is present, orchestrator invokes `StableDiffusionClient.generate` (optionally via job queue in future iterations) and collects URLs.
+6. Completed `ChatResponse` is returned: includes text, flag indicating image generation, job ID, and asset URLs.
+
+## 5. External Integrations
+- **DeepSeek Inference Endpoint**: Accepts OpenAI-style chat completions or direct JSON. Can run locally (TensorRT/ONNX/OpenVINO) or as a microservice.
+- **Stable Diffusion Inference**: Exposed through a REST API that mirrors Automatic1111 or Diffusers server conventions.
+- **Object Storage (optional)**: If image URLs need persistence, integrate with S3/GCS/MinIO and return signed URLs.
+- **Monitoring**: Export metrics via Prometheus or integrate with an APM to track latency, GPU utilization, and download status.
+
+## 6. Configuration Surface
+Environment variables handled in `config.py`:
+- `USE_MOCKS` — toggle between mock and real inference.
+- `AUTO_DOWNLOAD_MODELS`, `MODELS_CACHE_DIR` — control startup downloads.
+- `DEEPSEEK_ENDPOINT`, `STABLE_DIFFUSION_ENDPOINT` — HTTP targets for inference servers.
+- `HUGGINGFACE_TOKEN`, repo IDs, and revisions — specify model sources.
+- `REQUEST_TIMEOUT`, `CONVERSATION_HISTORY_LIMIT` — tune runtime behavior.
+
+## 7. Deployment Considerations
+- Package the FastAPI app with Gunicorn/Uvicorn workers behind an API gateway that handles authentication and rate limiting.
+- Run LLM and Diffusion services on separate GPU/NPU nodes; autoscale via Kubernetes HPA or Nomad.
+- Use a queue (Redis, RabbitMQ, Celery) for image generation if inference times exceed synchronous budget.
+- Implement safety filters (NSFW, prompt classification) between LLM output and diffusion calls.
+- Set up CI/CD to run tests, linting, and model checksum verification before deployments.
+
+## 8. Testing Checklist
+- Unit test prompt assembly and schema validation.
+- Mock LLM and diffusion clients to verify orchestrator branching logic.
+- Integration smoke test `POST /chat` covering both text-only and image requests.
+- Validate model download routine respects cache directory and token requirements.

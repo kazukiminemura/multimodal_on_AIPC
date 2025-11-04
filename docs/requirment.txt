@@ -1,18 +1,57 @@
-Functional Requirements
-- The system shall provide a chat interface that accepts user text prompts and returns model responses in real time.
-- The system shall detect when a user request requires image generation and emit a structured JSON payload containing both text and image instructions.
-- The system shall forward validated image prompts to the Stable Diffusion v1.5 inference service and retrieve generated images.
-- The system shall store generated images with associated metadata and provide retrievable links or identifiers back to clients.
-- The system shall maintain conversation history per user session for context-aware responses.
+# Multimodal Chatbot Requirements
 
-Non-Functional Requirements
-- Response latency for LLM-only queries shall remain under 2 seconds for P95 traffic.
-- Image generation requests shall complete within 20 seconds P95, including queue and inference time.
-- The system shall support concurrent handling of at least 200 active chat sessions without degradation of service.
-- The system shall provide rate limiting and authentication to guard against abuse.
-- The system shall log all requests, responses, and errors for observability and auditing.
+## 1. Goal
+- Deliver a local-first chat application that pairs DeepSeek-R1-Distill-Qwen-1.5B-int4-cw-ov for conversation with Stable Diffusion v1.5 for image generation.
+- Allow a single prompt to trigger both text and image responses through a lightweight API layer.
+- Run on Intel AI PCs or comparable hardware without depending on external cloud services.
 
-Operational Requirements
-- Orchestrator and inference services shall expose health endpoints for readiness and liveness checks.
-- The deployment pipeline shall support rollback to the previous stable model or service version within 5 minutes.
-- Monitoring shall track GPU utilization, queue depth, latency metrics, and error rates with alerting on threshold breaches.
+## 2. Target Users
+- Makers and developers experimenting with multimodal AI pipelines on personal hardware.
+- Content creators who want quick drafts of text plus supporting visuals.
+- Privacy-conscious users who prefer offline inference for both language and image tasks.
+
+## 3. Functional Requirements
+### 3.1 Chat Workflow
+- Expose a REST endpoint (`POST /chat`) that accepts `{ "user_id": "...", "message": "..." }`.
+- Maintain per-user conversation context for a configurable number of turns.
+- Return structured JSON containing the assistant’s text and, when applicable, image job metadata.
+
+### 3.2 Image Generation
+- Inspect the LLM output for an `image_prompt` block; when present, trigger Stable Diffusion v1.5 inference.
+- Provide image URLs (or paths) and job identifiers so clients can fetch or display the assets.
+- Support configurable negative prompts, sampler steps, CFG scale, and random seeds.
+
+### 3.3 Model Management
+- On startup, verify that required model files exist locally; when missing and auto-download is enabled, retrieve them from Hugging Face.
+- Cache downloaded weights under a configurable directory to avoid redundant transfers.
+- Allow toggling between mock mode (for development without heavy downloads) and full inference.
+
+### 3.4 Configuration & Operations
+- Pull runtime settings (endpoints, timeouts, cache paths, feature flags) from environment variables or `.env`.
+- Offer health-check endpoints for orchestrator and downstream services.
+- Log each request, response metadata, and model download events for observability.
+
+## 4. Non-functional Requirements
+- For text-only prompts, target sub-2-second P95 latency on recommended hardware.
+- Complete image generation within 20 seconds P95, including queueing and inference.
+- Handle at least 200 concurrent chat sessions with graceful degradation.
+- Enforce authenticated access and per-user rate limits to mitigate abuse.
+- Ensure the system can run fully offline once models are cached.
+
+## 5. Technical Constraints
+- Backend runtime: Python 3.10–3.12 with FastAPI, Uvicorn, Pydantic, httpx.
+- Language model served via DeepSeek runtime (TensorRT, ONNX Runtime, or OpenVINO) using INT4 weights.
+- Image model served through Diffusers, webui-compatible API, or OpenVINO deployment of Stable Diffusion v1.5.
+- Persistent stores: Redis (session cache) and PostgreSQL or S3-compatible object storage for long-lived assets (optional in MVP).
+
+## 6. Setup Flow
+1. Clone the repository and create a Python virtual environment.
+2. Install dependencies with `pip install -r requirements.txt`.
+3. Set environment variables for model endpoints or enable auto-downloads (`USE_MOCKS=false`).
+4. Launch the API via `uvicorn app.main:app --app-dir src --reload` and POST to `/chat`.
+
+## 7. Future Enhancements
+- Persist full conversation history in a database with search.
+- Add WebSocket streaming for partial text responses and image job status updates.
+- Integrate NSFW filters and automatic prompt sanitization.
+- Provide a browser UI with drag-and-drop prompt templates and gallery management.
