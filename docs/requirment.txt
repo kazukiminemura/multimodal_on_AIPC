@@ -25,8 +25,12 @@
 - On startup, verify that required model files exist locally; when missing and auto-download is enabled, retrieve them from Hugging Face.
 - Cache downloaded weights under a configurable directory to avoid redundant transfers.
 - Allow toggling between mock mode (for development without heavy downloads) and full inference.
+### 3.4 Hugging Face Auto-download
+- Support authenticated downloads using `HUGGINGFACE_TOKEN` for gated models.
+- Enable users to override the target repositories via environment variables.
+- Provide progress logging and clear messaging when downloads succeed or fail.
 
-### 3.4 Configuration & Operations
+### 3.5 Configuration & Operations
 - Pull runtime settings (endpoints, timeouts, cache paths, feature flags) from environment variables or `.env`.
 - Offer health-check endpoints for orchestrator and downstream services.
 - Log each request, response metadata, and model download events for observability.
