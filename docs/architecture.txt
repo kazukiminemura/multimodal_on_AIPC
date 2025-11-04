@@ -1,68 +1,67 @@
-## 1. Repository Layout
+## Repository Structure
 ```
 multimodal_on_AIPC/
-|-- src/app/
-|   |-- main.py              # FastAPI entry point with startup hooks
-|   |-- routes.py            # HTTP router (`POST /chat`, health checks TBD)
-|   |-- orchestrator.py      # Conversation store and flow control
-|   |-- prompt_manager.py    # System + developer prompt assembly
-|   |-- llm_client.py        # DeepSeek inference wrapper
-|   |-- image_client.py      # Stable Diffusion inference wrapper
-|   |-- model_downloader.py  # Auto-download helper for model weights
-|   |-- config.py            # Environment-driven settings
-|   `-- schemas.py           # Pydantic models shared across layers
-|-- docs/                    # Requirements and architecture docs
-|-- requirements.txt         # Python dependencies
-|-- Readme.md                # Setup instructions
-|-- models/ (optional)       # Cached weights when auto-download is enabled
-`-- tests/ (planned)         # Future automated tests
+├── download_models.py        # CLI wrapper to force model downloads into data/models
+├── docs/                     # Requirements & architecture documentation
+├── requirements.txt          # Python dependencies
+├── src/app/
+│   ├── __init__.py
+│   ├── config.py             # Environment-driven settings (model repos, cache dir, toggles)
+│   ├── download_models.py    # Async entry point used by the CLI wrapper
+│   ├── image_client.py       # Stable Diffusion INT8 OpenVINO client (mock + HTTP)
+│   ├── llm_client.py         # DeepSeek OpenVINO client (mock + HTTP)
+│   ├── main.py               # FastAPI app factory, startup hook, static assets
+│   ├── model_downloader.py   # Hugging Face snapshot helper with force download support
+│   ├── orchestrator.py       # Conversation store, LLM + diffusion coordination
+│   ├── prompt_manager.py     # System/developer prompt assembly for DeepSeek
+│   ├── routes.py             # `/chat` and `/health` endpoints
+│   └── schemas.py            # Pydantic models shared across components
+└── static/                   # index.html, chat.js, style.css, mock-image.svg
 ```
 
-## 2. Startup Flow
-1. `uvicorn app.main:app --app-dir src` spins up the FastAPI application.
-2. `app/main.py` registers the router and triggers `ensure_models_async` on startup.
-3. `model_downloader.py` checks `Settings` to decide whether to fetch DeepSeek and Stable Diffusion weights from Hugging Face into `MODELS_CACHE_DIR`.
-4. The first incoming request instantiates `ChatOrchestrator`, which loads configuration and prepares clients for LLM and image services.
+## Initialization Flow
+1. `uvicorn app.main:app --app-dir src` starts FastAPI.
+2. `app/main.py` mounts the static UI, registers routes, and calls `ensure_models_async()` on startup.
+3. `model_downloader.py` checks whether Hugging Face snapshots for
+   - `OpenVINO/DeepSeek-R1-Distill-Qwen-1.5B-int4-ov`
+   - `OpenVINO/stable-diffusion-v1-5-int8-ov`
+   exist under `data/models/`; if not, it downloads them (unless `USE_MOCKS=true` and not forced).
+4. Requests are handled by the orchestrator, which constructs prompts, invokes the LLM, and forwards image prompts to the diffusion client when required.
 
-## 3. Runtime Components
-- **ChatOrchestrator**: Coordinates prompt construction, conversation history, and downstream calls. Stores recent exchanges per user in memory (deque capped by `CONVERSATION_HISTORY_LIMIT`).
-- **DeepSeekClient**: Sends assembled messages to the DeepSeek inference endpoint (REST/OpenAI-compatible). Falls back to mock responses when `USE_MOCKS=true`.
-- **StableDiffusionClient**: Calls a Stable Diffusion v1.5 API (Diffusers/WebUI) with prompts from the LLM output; returns job ID and URLs.
-- **PromptManager**: Injects system/developer prompts, appends history, and builds the message list required by the LLM.
-- **ModelDownloader**: Uses `huggingface_hub.snapshot_download` to stage model weights (INT4 LLM, Stable Diffusion) in a deterministic directory structure.
-- **Settings**: Centralizes configuration (endpoints, tokens, cache paths, flags) sourced from environment variables.
+## Runtime Components
+- **PromptManager** – Prepends system/developer instructions and session history to LLM prompts.
+- **DeepSeekClient** – Talks to the DeepSeek OpenVINO inference endpoint (OpenAI-compatible JSON); includes a mock path for local testing.
+- **StableDiffusionClient** – Calls a Stable Diffusion v1.5 INT8 OpenVINO service; mock path returns local placeholder assets.
+- **ConversationStore** – Keeps a bounded deque per user (default 10 exchanges) for context retention.
+- **ChatOrchestrator** – Central coordinator that merges history, calls the LLM, triggers diffusion, and assembles the final `ChatResponse`.
+- **ModelDownloader** – Wraps `huggingface_hub.snapshot_download` to populate `data/models/deepseek/` and `data/models/stable-diffusion/`; also used by the standalone `download_models.py` script for pre-population.
+- **Static UI** – A single-page HTML/JS client that consumes `/chat`, stores session history in `sessionStorage`, and displays generated images.
 
-## 4. Request Flow
-1. Client sends JSON to `POST /chat` via HTTP or through a gateway.
-2. FastAPI validates payload against `ChatRequest` (user ID + message).
-3. Orchestrator merges system prompts and session history, then calls `DeepSeekClient.generate`.
-4. LLM returns `assistant_response` plus optional `image_prompt`. Response is validated using Pydantic.
-5. If `image_prompt` is present, orchestrator invokes `StableDiffusionClient.generate` (optionally via job queue in future iterations) and collects URLs.
-6. Completed `ChatResponse` is returned: includes text, flag indicating image generation, job ID, and asset URLs.
+## Request Lifecycle
+1. Browser or client POSTs `{ user_id, message }` to `/chat`.
+2. FastAPI validates against `ChatRequest`, fetches history from `ConversationStore`, and builds LLM messages.
+3. `DeepSeekClient.generate()` returns `assistant_response` plus optional `image_prompt`.
+4. If an image prompt exists, `StableDiffusionClient.generate()` returns job metadata and URLs; otherwise the orchestrator skips this step.
+5. `ChatResponse` is returned with text, flags, optional job ID, and URLs. The UI immediately renders text and thumbnails (mock or real).
 
-## 5. External Integrations
-- **DeepSeek Inference Endpoint**: Accepts OpenAI-style chat completions or direct JSON. Can run locally (TensorRT/ONNX/OpenVINO) or as a microservice.
-- **Stable Diffusion Inference**: Exposed through a REST API that mirrors Automatic1111 or Diffusers server conventions.
-- **Object Storage (optional)**: If image URLs need persistence, integrate with S3/GCS/MinIO and return signed URLs.
-- **Monitoring**: Export metrics via Prometheus or integrate with an APM to track latency, GPU utilization, and download status.
+## Configuration Surface
+Environment variables in `config.py` control:
+- `DEEPSEEK_ENDPOINT`, `STABLE_DIFFUSION_ENDPOINT`, and corresponding API keys.
+- `DEEPSEEK_REPO_ID` (defaults to `OpenVINO/DeepSeek-R1-Distill-Qwen-1.5B-int4-ov`), `STABLE_DIFFUSION_REPO_ID` (defaults to `OpenVINO/stable-diffusion-v1-5-int8-ov`), and optional revisions.
+- `MODELS_CACHE_DIR` (defaults to `data/models`), `AUTO_DOWNLOAD_MODELS`, `USE_MOCKS`, `REQUEST_TIMEOUT`, `CONVERSATION_HISTORY_LIMIT`.
+- `HUGGINGFACE_TOKEN` for gated repositories.
 
-## 6. Configuration Surface
-Environment variables handled in `config.py`:
-- `USE_MOCKS` — toggle between mock and real inference.
-- `AUTO_DOWNLOAD_MODELS`, `MODELS_CACHE_DIR` — control startup downloads.
-- `DEEPSEEK_ENDPOINT`, `STABLE_DIFFUSION_ENDPOINT` — HTTP targets for inference servers.
-- `HUGGINGFACE_TOKEN`, repo IDs, and revisions — specify model sources.
-- `REQUEST_TIMEOUT`, `CONVERSATION_HISTORY_LIMIT` — tune runtime behavior.
+`download_models.py` forcibly downloads models (ignoring `USE_MOCKS`) so deployments can stage weights before first run.
 
-## 7. Deployment Considerations
-- Package the FastAPI app with Gunicorn/Uvicorn workers behind an API gateway that handles authentication and rate limiting.
-- Run LLM and Diffusion services on separate GPU/NPU nodes; autoscale via Kubernetes HPA or Nomad.
-- Use a queue (Redis, RabbitMQ, Celery) for image generation if inference times exceed synchronous budget.
-- Implement safety filters (NSFW, prompt classification) between LLM output and diffusion calls.
-- Set up CI/CD to run tests, linting, and model checksum verification before deployments.
+## Deployment Considerations
+- Package the FastAPI app via Uvicorn or Gunicorn and front it with an API gateway for TLS, auth, and rate limiting.
+- Host DeepSeek and Stable Diffusion services on hardware with OpenVINO support; scale them independently.
+- Add Redis or another cache for session data if multiple orchestrator instances run behind a load balancer.
+- Integrate monitoring (Prometheus, OpenTelemetry) to track request latency, GPU/NPU utilization, download status, and failures.
+- Enable NSFW filtering and prompt sanitation before invoking diffusion in production environments.
 
-## 8. Testing Checklist
-- Unit test prompt assembly and schema validation.
-- Mock LLM and diffusion clients to verify orchestrator branching logic.
-- Integration smoke test `POST /chat` covering both text-only and image requests.
-- Validate model download routine respects cache directory and token requirements.
+## Testing & Validation
+- Unit-test prompt assembly, schema validation, and conversation-store behavior.
+- Mock the LLM/diffusion clients to verify orchestrator branching.
+- Run integration smoke tests hitting `/chat` for text-only and text+image cases.
+- Exercise `python download_models.py` in CI to verify huggingface-hub integration (can be skipped with mocks).
