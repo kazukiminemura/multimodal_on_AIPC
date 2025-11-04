@@ -1,0 +1,27 @@
+Overview
+- A web or chat client communicates with the backend via HTTPS and WebSocket/SSE for real-time updates.
+- An API Gateway handles authentication, rate limiting, and routing to internal services.
+- The Orchestrator service manages conversation state, prepares prompts, and coordinates LLM and image generation flows.
+
+Core Components
+- Prompt Manager: maintains system/developer prompts, templates, and context assembly logic.
+- LLM Inference: DeepSeek-R1-Distill-Qwen-1.5B-int4-cw-ov served via optimized runtime (e.g., TensorRT/ONNX Runtime) on dedicated GPU/CPU nodes, returning structured JSON (assistant_response + image_prompt).
+- Image Inference: Stable Diffusion v1.5 service (Diffusers or WebUI-compatible API) consuming image_prompt payloads and producing images.
+- Asset Storage: object storage (S3/GCS/local NAS) for generated images and metadata, providing signed URLs for clients.
+- Conversation Store: Redis for short-term session state, PostgreSQL for persistent history and analytics.
+- Job Queue: Redis Queue or RabbitMQ to decouple long-running image generation tasks from request/response cycle.
+
+Data Flow
+- Client sends user message → API Gateway → Orchestrator.
+- Orchestrator composes prompt via Prompt Manager → LLM Inference.
+- LLM returns JSON; Orchestrator validates schema.
+  - If image_prompt present: enqueue job to Image Inference via Job Queue.
+  - If no image_prompt: respond immediately with assistant_response.
+- Image Inference generates image → stores asset → returns URL to Orchestrator.
+- Orchestrator streams assistant_response and image URL(s) back to client.
+
+Operational Concerns
+- Monitoring stack (Prometheus, Grafana, ELK) collects metrics and logs from all services.
+- Autoscaling policies scale LLM and diffusion workers based on request rate and GPU utilization.
+- Canary deployments and model versioning enable controlled rollout and rollback.
+- Safety filters (NSFW/abuse detection) applied pre- and post-generation using CLIP-based classifiers.

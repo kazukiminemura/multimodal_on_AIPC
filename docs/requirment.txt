@@ -1,0 +1,18 @@
+Functional Requirements
+- The system shall provide a chat interface that accepts user text prompts and returns model responses in real time.
+- The system shall detect when a user request requires image generation and emit a structured JSON payload containing both text and image instructions.
+- The system shall forward validated image prompts to the Stable Diffusion v1.5 inference service and retrieve generated images.
+- The system shall store generated images with associated metadata and provide retrievable links or identifiers back to clients.
+- The system shall maintain conversation history per user session for context-aware responses.
+
+Non-Functional Requirements
+- Response latency for LLM-only queries shall remain under 2 seconds for P95 traffic.
+- Image generation requests shall complete within 20 seconds P95, including queue and inference time.
+- The system shall support concurrent handling of at least 200 active chat sessions without degradation of service.
+- The system shall provide rate limiting and authentication to guard against abuse.
+- The system shall log all requests, responses, and errors for observability and auditing.
+
+Operational Requirements
+- Orchestrator and inference services shall expose health endpoints for readiness and liveness checks.
+- The deployment pipeline shall support rollback to the previous stable model or service version within 5 minutes.
+- Monitoring shall track GPU utilization, queue depth, latency metrics, and error rates with alerting on threshold breaches.
