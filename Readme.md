@@ -1,8 +1,5 @@
-﻿# Multimodal Chatbot
-- `GET /debug/llm` — smoke-tests the DeepSeek endpoint with a diagnostic prompt.
-- `POST /image` — direct Stable Diffusion endpoint for prompt-driven image tests.
-
-An offline-friendly multimodal assistant that pairs **OpenVINO/DeepSeek-R1-Distill-Qwen-1.5B-int4-ov** for chat with **OpenVINO/stable-diffusion-v1-5-int8-ov** for on-demand image synthesis. The service runs entirely on user-controlled hardware and ships with a lightweight single-page UI.
+# OpenVINO Stable Diffusion Service
+Generate images locally with **OpenVINO/stable-diffusion-v1-5-int8-ov**. This project contains a FastAPI backend with an OpenVINO-aware model downloader plus a lightweight browser UI for prompt submission.
 
 ## Getting Started
 
@@ -14,67 +11,49 @@ python download_models.py       # optional; forces model downloads
 uvicorn main:app --reload
 ```
 
-Open `http://127.0.0.1:8000/` to use the chat interface, or interact with the API directly.
+Open `http://127.0.0.1:8000/` to use the bundled interface, or issue API calls directly:
 
 ```http
-POST /chat
+POST /image
 Content-Type: application/json
 
 {
-  "user_id": "demo-user",
-  "message": "Create a short bedtime story with a dreamy illustration."
+  "prompt": "Moody watercolor of neon-lit Kyoto streets at night",
+  "negative_prompt": "low detail, blurry",
+  "num_inference_steps": 28,
+  "guidance_scale": 8.0,
+  "width": 512,
+  "height": 512
 }
 ```
 
-The orchestrator maintains per-user context, calls the DeepSeek model, and—when an `image_prompt` is returned—invokes Stable Diffusion to generate imagery. Responses contain:
+Successful responses contain the generated image URLs along with metadata:
 
 ```jsonc
 {
-  "assistant_response": "…",
-  "image_prompt": { "prompt": "…", "num_inference_steps": 24, ... },
-  "image_job_id": "mock-job-1234",
-  "image_urls": ["/static/mock-image.svg"],
+  "job_id": "sd-job-001",
+  "urls": ["/static/mock-image.svg"],
+  "provider": "stable-diffusion",
   "used_mocks": true,
   "created_at": "2025-05-01T12:00:00Z"
 }
 ```
 
-### Text-only quickstart (DeepSeek only)
-
-If you want to verify the chat experience before wiring up Stable Diffusion, leave image generation disabled (the default) and point the service at your DeepSeek endpoint:
-
-```powershell
-# optional: stay in mock mode while preparing the DeepSeek runtime
-set USE_MOCKS=true
-
-# once your OpenAI-compatible DeepSeek server is reachable:
-set USE_MOCKS=false
-set DEEPSEEK_ENDPOINT=http://127.0.0.1:8001/v1/chat/completions
-set ENABLE_IMAGE_GENERATION=false
-
-uvicorn main:app --reload
-```
-
-Use the `/debug/llm` endpoint to send a diagnostic prompt and confirm the DeepSeek server responds before trying the UI.
-
 ## Configuration
 
-All settings are loaded from environment variables (or `.env`) via `src/app/config.py`. Defaults now assume real inference endpoints are available so the chatbot attempts to call the actual models unless you toggle them off explicitly.
+Settings are read from environment variables (or `.env`). The most relevant options are:
 
-| Variable | Default | Purpose |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `USE_MOCKS` | `false` | Return canned responses instead of calling inference servers |
-| `AUTO_DOWNLOAD_MODELS` | `true` | Automatically fetch missing model snapshots on startup |
-| `MODELS_CACHE_DIR` | `data/models` | Root directory for cached OpenVINO weights |
-| `DEEPSEEK_ENDPOINT` | `http://localhost:8001/v1/chat/completions` | OpenAI-compatible chat endpoint |
-| `STABLE_DIFFUSION_ENDPOINT` | `http://localhost:8002/v1/images/generations` | Diffusion endpoint |
-| `DEEPSEEK_REPO_ID` | `OpenVINO/DeepSeek-R1-Distill-Qwen-1.5B-int8-ov` | Hugging Face repo for the LLM |
-| `STABLE_DIFFUSION_REPO_ID` | `OpenVINO/stable-diffusion-v1-5-int8-ov` | Hugging Face repo for diffusion |
-| `ENABLE_IMAGE_GENERATION` | `false` | Enable Stable Diffusion image generation calls |
-| `HUGGINGFACE_TOKEN` | *(unset)* | Token required for gated downloads |
-| `ENABLE_CATBOT_FALLBACK` | `false` | Enable playful local fallback when the LLM endpoint is unavailable |
+| `USE_MOCKS` | `false` | Return a canned placeholder image instead of contacting the inference server |
+| `AUTO_DOWNLOAD_MODELS` | `true` | Download the Stable Diffusion snapshot automatically at startup |
+| `MODELS_CACHE_DIR` | `data/models` | Directory used to cache OpenVINO model files |
+| `STABLE_DIFFUSION_ENDPOINT` | `http://localhost:8002/v1/images/generations` | Stable Diffusion inference endpoint (OpenAI-compatible POST API) |
+| `STABLE_DIFFUSION_REPO_ID` | `OpenVINO/stable-diffusion-v1-5-int8-ov` | Hugging Face repository that hosts the quantized weights |
+| `HUGGINGFACE_TOKEN` | *(unset)* | Token for gated repositories if required |
+| `REQUEST_TIMEOUT` | `30.0` | HTTP timeout used by the client in seconds |
 
-Use the bundled CLI to stage weights ahead of time. It relies on the Hugging Face `hf download` command (bundled with recent `huggingface-hub` releases`) and bypasses the mock guard unless `--no-force` is supplied.
+Use the CLI helper to manage model downloads manually:
 
 ```powershell
 python download_models.py          # force download
@@ -83,14 +62,12 @@ python download_models.py --no-force
 
 ## API Surface
 
-- `POST /chat` — core multimodal endpoint. Accepts a `ChatRequest` and returns a `ChatResponse`.
-- `GET /health` — reports service status, mock usage, and whether model snapshots are cached (`details` map).
-- Static assets mounted at `/static/*` serve the bundled UI (`static/index.html`, `chat.js`, `style.css`).
+- `POST /image` — accept an image-generation prompt and return resulting image URLs.
+- `GET /health` — report service readiness, cache status, and runtime configuration.
+- Static assets (`/static/*`) host the single-page interface built with vanilla JS.
 
 ## Development Notes
 
-- Conversation history is kept in-memory with a configurable turn limit (`CONVERSATION_HISTORY_LIMIT`, default 10).
-- Mock mode produces deterministic text and overlays image placeholders from `static/mock-image.svg`.
-- When `USE_MOCKS=false`, ensure the configured DeepSeek and Stable Diffusion endpoints expose OpenAI-compatible JSON APIs.
-- Extend the pipeline by swapping clients in `src/app/llm_client.py` and `src/app/image_client.py`, or by persisting history in `src/app/orchestrator.py`.
-- If an endpoint goes offline, enable CatBot fallback (`ENABLE_CATBOT_FALLBACK=true`) when you prefer graceful copy over raw errors.
+- Mock mode uses `static/mock-image.svg` to keep the UI functioning without an inference server.
+- Model downloads rely on `huggingface_hub.snapshot_download`; cached assets live under `MODELS_CACHE_DIR/stable-diffusion`.
+- Adjust prompt defaults or UI behavior via `static/index.html` and `static/chat.js`.

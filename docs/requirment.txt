@@ -1,57 +1,55 @@
-# Multimodal Chatbot Requirements
+# Stable Diffusion Service Requirements
 
 ## 1. Goals
-- Deliver an offline-friendly chatbot that couples **OpenVINO/DeepSeek-R1-Distill-Qwen-1.5B-int4-ov** for conversation with **OpenVINO/stable-diffusion-v1-5-int8-ov** for image synthesis.
-- Let a single prompt trigger either text-only replies or text plus generated imagery via one API.
-- Provide a lightweight UI and API that run entirely on a user-controlled workstation (Intel AI PC or compatible hardware).
+- Deliver an offline-friendly image generation service powered exclusively by **OpenVINO/stable-diffusion-v1-5-int8-ov**.
+- Provide a simple REST API plus a bundled UI so users can craft prompts and review outputs entirely on local hardware (Intel AI PC or compatible).
+- Offer predictable operations tooling: health checks, optional mock mode, and scripted model downloads.
 
 ## 2. Target Users
-- Makers and developers experimenting with multimodal AI pipelines on personal hardware.
-- Designers and storytellers who need quick visual drafts to accompany generated text.
-- Privacy-conscious users who prefer not to send prompts or outputs to cloud services.
+- Makers and developers experimenting with OpenVINO Stable Diffusion on their own devices.
+- Designers who need quick, private ideation drafts without sending prompts to external clouds.
+- Educators demonstrating diffusion workflows in constrained or offline environments.
 
 ## 3. Functional Requirements
-### 3.1 Chat Interface
-- Expose `POST /chat` that accepts `{ "user_id": "...", "message": "..." }`.
-- Maintain per-user conversational context for up to `CONVERSATION_HISTORY_LIMIT` turns.
-- Return structured JSON with `assistant_response` and `image_urls` / `image_job_id` when imagery is produced.
+### 3.1 Image Generation API
+- Expose `POST /image` accepting prompt parameters (`prompt`, `negative_prompt`, `num_inference_steps`, `guidance_scale`, `seed`, `width`, `height`).
+- Return `ImageGenerationResponse` with job metadata, URLs, provider identifier, and mock flag.
+- Reject invalid payloads via Pydantic validation and return descriptive HTTP errors.
 
-### 3.2 Image Generation
-- Detect an `image_prompt` block in the LLM response; if present, invoke the Stable Diffusion INT8 runtime.
-- Support prompt parameters coming from the LLM output (negative prompt, steps, cfg scale, seed).
-- Store or expose generated image locations so the UI can display thumbnails immediately.
+### 3.2 Health & Operations
+- Expose `GET /health` reporting `status`, `use_mocks`, `auto_download_models`, `cached_models`, and Stable Diffusion details.
+- Log model download attempts, inference requests, and errors with contextual metadata.
+- Allow optional mock mode (`USE_MOCKS=true`) to keep the UI interactive when no inference server is available.
 
 ### 3.3 Model Management
-- On startup, ensure both OpenVINO model weights exist under `data/models`; auto-download them from Hugging Face when permitted.
-- Provide a script (`python download_models.py`) that force-downloads models regardless of mock flags.
-- Allow switching between mock mode (`USE_MOCKS=true`) and real inference for development.
+- On startup (when `AUTO_DOWNLOAD_MODELS=true`), ensure the Stable Diffusion snapshot exists under `data/models/stable-diffusion`.
+- Provide `python download_models.py` to force downloads regardless of mock configuration.
+- Respect `HUGGINGFACE_TOKEN` when gated repos require authentication.
 
-### 3.4 Configuration & Operations
-- Read endpoints, API keys, timeouts, cache directories, and feature flags from environment variables or `.env`.
-- Offer `GET /health` reporting service status, mock usage, and whether models are cached.
-- Emit structured logs for chat requests, download events, and errors to aid observability.
+### 3.4 User Interface
+- Serve static assets (`index.html`, `chat.js`, `style.css`) that let users submit prompts, tweak parameters, and view recent generations.
+- Persist a small gallery history per session using browser storage.
+- Indicate request status (ready, generating, error) in the footer.
 
 ## 4. Non-functional Requirements
-- Aim for <2 s P95 latency for text-only prompts on recommended hardware.
-- Complete combined text + image requests within 20 s P95, including queue time.
-- Support at least 200 concurrent chat sessions without non-graceful degradation.
-- Operate offline once models are cached; no outbound network calls during inference.
-- Enforce authentication and per-user rate limiting to prevent misuse (future enhancement).
+- Operate entirely offline once models are cached and a local inference endpoint is available.
+- Complete typical 512×512 generations within ~20 s on recommended hardware; surface timeouts gracefully.
+- Keep the codebase readable and modular for future feature additions (safety filters, gallery downloads, etc.).
 
 ## 5. Technical Constraints
-- Backend: Python 3.10–3.12 with FastAPI, Uvicorn, httpx, Pydantic, huggingface-hub.
-- LLM runtime: OpenVINO execution of DeepSeek-R1-Distill-Qwen-1.5B-int4-ov via local inference server.
-- Diffusion runtime: OpenVINO deployment of stable-diffusion-v1-5-int8-ov or API-compatible service.
-- Persistence (optional): Redis for session cache, object storage for generated assets if long-term retention is needed.
+- Backend: Python 3.10+ with FastAPI, Uvicorn, httpx, Pydantic, pydantic-settings, huggingface-hub.
+- Stable Diffusion runtime: OpenVINO execution of the quantized v1.5 model reachable via an OpenAI-compatible HTTP endpoint.
+- Frontend: static HTML/CSS/JavaScript served directly by FastAPI; no build tools required.
 
 ## 6. Setup Flow
 1. Clone the repository and create a Python virtual environment.
 2. Install dependencies with `pip install -r requirements.txt`.
-3. Run `python download_models.py` (requires Hugging Face token when necessary) or set `USE_MOCKS=true` for dry runs.
-4. Launch `uvicorn app.main:app --app-dir src --reload` and open the UI at `http://127.0.0.1:8000/`.
+3. Optionally stage weights via `python download_models.py` (requires Hugging Face credentials when gated).
+4. Launch `uvicorn main:app --reload` and open `http://127.0.0.1:8000/`.
+5. Configure the Stable Diffusion inference endpoint via environment variables as needed.
 
 ## 7. Future Enhancements
-- Persist conversation history in a database with search and tagging.
-- Add WebSocket streaming for partial text responses and real-time image job updates.
-- Integrate NSFW/safety filters between the LLM output and diffusion calls.
-- Provide template libraries, gallery management, and asset export from the UI.
+- Add safety filters and NSFW detection before returning generated images.
+- Support batch generation and job queue monitoring.
+- Provide export options (zip downloads, shareable links) for the gallery.
+- Integrate authentication and rate limiting for multi-user deployments.
