@@ -1,55 +1,63 @@
 ## Repository Structure
 ```
 multimodal_on_AIPC/
-├── download_models.py        # CLI helper to trigger Stable Diffusion downloads
-├── docs/                     # Requirements & architecture notes
-├── requirements.txt          # Python dependencies
+├── main.py                   # Uvicorn entrypoint that wires src/ into sys.path
+├── download_models.py        # CLI helper to prefetch the OpenVINO snapshot
+├── requirements.txt          # Python dependencies (FastAPI + OpenVINO stack)
 ├── src/app/
-│   ├── __init__.py
-│   ├── config.py             # Environment-driven settings (endpoints, cache dirs, toggles)
-│   ├── download_models.py    # Async entry point used by the CLI wrapper
-│   ├── image_client.py       # Stable Diffusion INT8 OpenVINO client (mock + HTTP)
-│   ├── main.py               # FastAPI app factory, startup hooks, static assets
-│   ├── model_downloader.py   # Hugging Face snapshot helper for Stable Diffusion weights
-│   ├── routes.py             # `/image` and `/health` endpoints
-│   └── schemas.py            # Pydantic models used by the API
-└── static/                   # index.html, chat.js, style.css, mock-image.svg
+│   ├── __init__.py           # Exposes factory for external runners
+│   ├── config.py             # Pydantic settings (dirs, device, repo id, toggles)
+│   ├── main.py               # FastAPI factory, routes, static mounts
+│   ├── models.py             # Request/response schemas + field validation
+│   └── services.py           # Stable Diffusion service using OpenVINO pipeline
+└── static/                   # Browser UI assets (HTML, JS, CSS, mock image)
 ```
 
+Generated PNG files live under `data/generated/`, and downloaded model snapshots land in `data/models/stable-diffusion/`.
+
 ## Initialization Flow
-1. `uvicorn main:app --reload` boots FastAPI from the project root (or `uvicorn app.main:app --app-dir src`).
-2. `src/app/main.py` mounts the static UI, registers API routes, and stores the configured `StableDiffusionClient` in `app.state`.
-3. During startup, `ensure_models()` makes sure the Stable Diffusion snapshot from Hugging Face is cached under `data/models/stable-diffusion`. Downloads respect `AUTO_DOWNLOAD_MODELS` and use `huggingface_hub.snapshot_download`.
-4. Requests to `/image` are validated against `ImageGenerationRequest` and then sent to the `StableDiffusionClient`, which either calls the remote endpoint or returns the mock payload.
+1. `uvicorn main:app --reload` executes `main.py`, which ensures `src/` is importable and exposes the FastAPI app.
+2. `src/app/main.py:create_app()` instantiates `Settings`, prepares cache directories, and builds a `StableDiffusionService`.
+3. When `AUTO_DOWNLOAD_MODELS=true`, the service triggers `huggingface_hub.snapshot_download` to mirror `OpenVINO/stable-diffusion-v1-5-int8-ov` locally.
+4. Static assets are mounted at `/static`, generated files at `/generated`, and REST routes are registered.
 
 ## Runtime Components
-- **Settings** – Provides environment-driven configuration via `pydantic_settings`. Handles cache directories, HTTP timeouts, repo IDs, and mock toggles.
-- **StableDiffusionClient** – Thin async wrapper over an OpenAI-compatible Stable Diffusion endpoint. Includes a mock branch for offline testing and handles payload shaping.
-- **ModelDownloader** – Shared helper that mirrors the Hugging Face repo into `data/models/stable-diffusion`. Exposed via the CLI to stage assets manually.
-- **FastAPI Routes** – `/image` returns `ImageGenerationResponse` objects; `/health` exposes model-cache and mock status.
-- **Static UI** – Vanilla HTML/CSS/JS client that submits prompts from the browser, renders returned URLs, and stores a small session history.
+- **Settings (`config.py`)**  
+  Parses environment variables via `pydantic-settings`. Controls mock mode, cache paths, Hugging Face repo, timeout, and target OpenVINO device (`GPU` by default).
+
+- **StableDiffusionService (`services.py`)**  
+  Wraps `OVStableDiffusionPipeline` from `optimum-intel`. Lazily loads the pipeline from the cached snapshot (or remote repo on first run), reshapes/compiles per resolution, and persists results. Includes a mock branch for deterministic responses without inference.
+
+- **FastAPI App (`main.py`)**  
+  Provides `/image` for generation and `/health` for readiness checks. Mounts static UI and generated-assets directories.
+
+- **Frontend (`static/`)**  
+  Minimal HTML/CSS/JS that posts prompts to `/image`, shows status updates, and displays the latest image. Uses fetch API directly—no build step required.
 
 ## Request Lifecycle
-1. Browser or API client POSTs an `ImageGenerationRequest` (prompt + optional parameters) to `/image`.
-2. FastAPI validates the payload and resolves `StableDiffusionClient` from the application state.
-3. The client sends a JSON request to `STABLE_DIFFUSION_ENDPOINT` unless `USE_MOCKS=true`.
-4. The resulting URLs and metadata are wrapped in `ImageGenerationResponse` and returned to the caller. The UI appends the card to the gallery view.
+1. Browser submits a prompt via POST `/image` with parameters such as `prompt`, `width`, `height`, `guidance_scale`, etc.
+2. Payload is validated by `ImageGenerationRequest`; width/height must be multiples of 8, ranges are enforced.
+3. `StableDiffusionService.generate()` either returns a mock asset or runs the OpenVINO pipeline on the configured device (GPU with CPU fallback).
+4. The generated PNG is stored under `data/generated/<job_id>.png`, and the API responds with metadata plus a `/generated/...` URL for the frontend.
 
-## Configuration Surface
-Environment variables parsed in `config.py` include:
-- `USE_MOCKS`, `AUTO_DOWNLOAD_MODELS`, `REQUEST_TIMEOUT`
-- `MODELS_CACHE_DIR`, `STABLE_DIFFUSION_REPO_ID`, `STABLE_DIFFUSION_ENDPOINT`
-- `HUGGINGFACE_TOKEN` for gated downloads
+## Health & Monitoring
+- `/health` returns cache status, device target, mock state, and directories so operators can confirm readiness.
+- Model compilation time for new resolutions is logged implicitly via the pipeline; consider wrapping with structured logging for more telemetry if needed.
 
-Models are cached within `<MODELS_CACHE_DIR>/stable-diffusion`. The CLI (`python download_models.py`) ignores mock settings so deployments can pre-stage files.
+## Configuration Surface (selected)
+- `USE_MOCKS` — Enable deterministic placeholder responses.
+- `AUTO_DOWNLOAD_MODELS` — Fetch the OpenVINO snapshot during startup.
+- `MODELS_CACHE_DIR`, `GENERATED_IMAGES_DIR` — Override storage locations.
+- `STABLE_DIFFUSION_REPO_ID` — Defaults to `OpenVINO/stable-diffusion-v1-5-int8-ov`.
+- `OPENVINO_DEVICE` — Device string for inference (`GPU`, `CPU`, `AUTO`, etc.).
+- `HUGGINGFACE_TOKEN` — Optional token for gated downloads.
 
-## Deployment Considerations
-- Host the Stable Diffusion inference server on the same machine (OpenVINO runtime) or expose it via an internal network endpoint.
-- Front FastAPI with a reverse proxy for TLS, authentication, and rate limiting if exposing beyond localhost.
-- Persist generated images to durable storage or synchronize with object storage when the gallery needs long-term retention.
-- Add monitoring (Prometheus, OpenTelemetry) to capture inference latency, download status, and HTTP error rates.
+## Operational Notes
+- GPU execution assumes appropriate Intel GPU drivers. When unavailable, the service logs a warning and runs on CPU.
+- `python download_models.py --force` wipes and re-downloads the snapshot (useful for CI or corrupted caches).
+- Generated files are not rotated automatically; integrate `clean_generated_images()` or external housekeeping in production scenarios.
 
-## Testing & Validation
-- Unit-test configuration parsing, payload validation, and the mock generation branch.
-- Mock the Stable Diffusion HTTP client to verify `/image` and `/health` responses.
-- Exercise `python download_models.py` in automated pipelines to catch authentication or permission regressions (can be skipped via environment flags).
+## Future Extensions
+- Add authentication and rate limiting for multi-user setups.
+- Introduce safety filters before persisting or returning images.
+- Implement job queueing / background workers for longer-running tasks.

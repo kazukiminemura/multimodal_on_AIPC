@@ -1,55 +1,57 @@
 # Stable Diffusion Service Requirements
 
 ## 1. Goals
-- Deliver an offline-friendly image generation service powered exclusively by **OpenVINO/stable-diffusion-v1-5-int8-ov**.
-- Provide a simple REST API plus a bundled UI so users can craft prompts and review outputs entirely on local hardware (Intel AI PC or compatible).
-- Offer predictable operations tooling: health checks, optional mock mode, and scripted model downloads.
+- Deliver a local-only Stable Diffusion experience backed by **OpenVINO/stable-diffusion-v1-5-int8-ov**.
+- Provide both an HTTP API and a minimal browser UI so prompts, parameters, and results stay on-device.
+- Support Intel GPU acceleration out of the box with graceful CPU fallback.
 
 ## 2. Target Users
-- Makers and developers experimenting with OpenVINO Stable Diffusion on their own devices.
-- Designers who need quick, private ideation drafts without sending prompts to external clouds.
-- Educators demonstrating diffusion workflows in constrained or offline environments.
+- AI PC enthusiasts exploring OpenVINO-optimized diffusion models.
+- Designers and makers who need private, offline concept generation.
+- Educators showcasing diffusion workflows without cloud dependencies.
 
 ## 3. Functional Requirements
 ### 3.1 Image Generation API
-- Expose `POST /image` accepting prompt parameters (`prompt`, `negative_prompt`, `num_inference_steps`, `guidance_scale`, `seed`, `width`, `height`).
-- Return `ImageGenerationResponse` with job metadata, URLs, provider identifier, and mock flag.
-- Reject invalid payloads via Pydantic validation and return descriptive HTTP errors.
+- Expose `POST /image` accepting `prompt`, `negative_prompt`, `num_inference_steps`, `guidance_scale`, `width`, `height`, and optional `seed`.
+- Validate dimensions as multiples of 8 and enforce sensible numeric bounds.
+- Return metadata including job id, provider, device, timestamps, mock flag, and a URL to the generated PNG.
 
 ### 3.2 Health & Operations
-- Expose `GET /health` reporting `status`, `use_mocks`, `auto_download_models`, `cached_models`, and Stable Diffusion details.
-- Log model download attempts, inference requests, and errors with contextual metadata.
-- Allow optional mock mode (`USE_MOCKS=true`) to keep the UI interactive when no inference server is available.
+- Provide `GET /health` reporting readiness (`ok` or `degraded`), mock usage, cached model availability, configured repo id, cache directories, and device target.
+- Log download failures and inference exceptions with actionable messages (GPU fallback, timeout, etc.).
+- Allow deterministic mock mode via `USE_MOCKS=true` for demos without the OpenVINO runtime.
 
-### 3.3 Model Management
-- On startup (when `AUTO_DOWNLOAD_MODELS=true`), ensure the Stable Diffusion snapshot exists under `data/models/stable-diffusion`.
-- Provide `python download_models.py` to force downloads regardless of mock configuration.
-- Respect `HUGGINGFACE_TOKEN` when gated repos require authentication.
+### 3.3 Model Lifecycle
+- When `AUTO_DOWNLOAD_MODELS=true`, download the Hugging Face snapshot into `data/models/stable-diffusion` at startup (idempotent).
+- Ship `python download_models.py [--force]` to pre-stage weights or refresh a corrupted cache.
+- Respect `HUGGINGFACE_TOKEN` when a gated repository is used.
 
 ### 3.4 User Interface
-- Serve static assets (`index.html`, `chat.js`, `style.css`) that let users submit prompts, tweak parameters, and view recent generations.
-- Persist a small gallery history per session using browser storage.
-- Indicate request status (ready, generating, error) in the footer.
+- Serve static assets (`index.html`, `ui.js`, `styles.css`, `mock-image.svg`) directly from FastAPI.
+- Let users tweak core parameters and display live status (generating, complete, error) plus the latest image.
+- Avoid build tooling; assets must run in any modern browser without bundling.
 
 ## 4. Non-functional Requirements
-- Operate entirely offline once models are cached and a local inference endpoint is available.
-- Complete typical 512×512 generations within ~20 s on recommended hardware; surface timeouts gracefully.
-- Keep the codebase readable and modular for future feature additions (safety filters, gallery downloads, etc.).
+- Operate fully offline once dependencies and weights are installed.
+- Complete a 512×512 inference in ~20 seconds or provide clear timeout feedback.
+- Keep code modular to enable future additions (safety filters, background jobs, galleries).
+- Document GPU requirements and fallback behavior.
 
 ## 5. Technical Constraints
-- Backend: Python 3.10+ with FastAPI, Uvicorn, httpx, Pydantic, pydantic-settings, huggingface-hub.
-- Stable Diffusion runtime: OpenVINO execution of the quantized v1.5 model reachable via an OpenAI-compatible HTTP endpoint.
-- Frontend: static HTML/CSS/JavaScript served directly by FastAPI; no build tools required.
+- Python 3.10+ runtime.
+- Backend stack: FastAPI, Pydantic v2, `pydantic-settings`, `optimum-intel`, `diffusers`, `openvino`, `huggingface-hub`, `numpy`, `Pillow`.
+- No external inference server; all generation relies on the local OpenVINO pipeline.
+- Filesystem layout must be friendly for Windows paths (default) but portable to Linux/macOS.
 
 ## 6. Setup Flow
-1. Clone the repository and create a Python virtual environment.
-2. Install dependencies with `pip install -r requirements.txt`.
-3. Optionally stage weights via `python download_models.py` (requires Hugging Face credentials when gated).
-4. Launch `uvicorn main:app --reload` and open `http://127.0.0.1:8000/`.
-5. Configure the Stable Diffusion inference endpoint via environment variables as needed.
+1. Create a virtual environment and install dependencies with `pip install -r requirements.txt`.
+2. Optionally run `python download_models.py` (requires Hugging Face credentials if the repo is gated).
+3. Export environment variables or `.env` values as needed (`USE_MOCKS`, `OPENVINO_DEVICE`, etc.).
+4. Launch `uvicorn main:app --reload` and navigate to `http://127.0.0.1:8000/`.
+5. Submit prompts via UI or API; generated images appear under `data/generated`.
 
 ## 7. Future Enhancements
-- Add safety filters and NSFW detection before returning generated images.
-- Support batch generation and job queue monitoring.
-- Provide export options (zip downloads, shareable links) for the gallery.
-- Integrate authentication and rate limiting for multi-user deployments.
+- Add disk-retention policies or cleanup utilities for generated images.
+- Introduce authentication and rate limiting for shared deployments.
+- Plug-in safety/NSFW filtering prior to returning results.
+- Support batched generation and job tracking for longer queues.

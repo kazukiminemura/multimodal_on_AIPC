@@ -1,5 +1,5 @@
-# OpenVINO Stable Diffusion Service
-Generate images locally with **OpenVINO/stable-diffusion-v1-5-int8-ov**. This project contains a FastAPI backend with an OpenVINO-aware model downloader plus a lightweight browser UI for prompt submission.
+# Stable Diffusion Service
+Generate images from text prompts with a FastAPI backend powered by OpenVINO (`OpenVINO/stable-diffusion-v1-5-int8-ov`) and a lightweight browser UI for prompt submission.
 
 ## Getting Started
 
@@ -7,7 +7,9 @@ Generate images locally with **OpenVINO/stable-diffusion-v1-5-int8-ov**. This pr
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-python download_models.py       # optional; forces model downloads
+# optional: download model snapshot locally (requires HF token for gated repos)
+python download_models.py
+setx HF_TOKEN "<your-hugging-face-token>"   # or use a .env file
 uvicorn main:app --reload
 ```
 
@@ -45,13 +47,15 @@ Settings are read from environment variables (or `.env`). The most relevant opti
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `USE_MOCKS` | `false` | Return a canned placeholder image instead of contacting the inference server |
-| `AUTO_DOWNLOAD_MODELS` | `true` | Download the Stable Diffusion snapshot automatically at startup |
-| `MODELS_CACHE_DIR` | `data/models` | Directory used to cache OpenVINO model files |
-| `STABLE_DIFFUSION_ENDPOINT` | `http://localhost:8002/v1/images/generations` | Stable Diffusion inference endpoint (OpenAI-compatible POST API) |
-| `STABLE_DIFFUSION_REPO_ID` | `OpenVINO/stable-diffusion-v1-5-int8-ov` | Hugging Face repository that hosts the quantized weights |
+| `USE_MOCKS` | `false` | Return the bundled placeholder image instead of calling the inference backend |
+| `AUTO_DOWNLOAD_MODELS` | `true` | Download the Stable Diffusion snapshot automatically at startup (if not cached) |
+| `MODELS_CACHE_DIR` | `data/models` | Directory used to cache Stable Diffusion model snapshots |
+| `GENERATED_IMAGES_DIR` | `data/generated` | Location used to persist generated PNG files |
+| `STABLE_DIFFUSION_REPO_ID` | `OpenVINO/stable-diffusion-v1-5-int8-ov` | Hugging Face repository that hosts the Stable Diffusion OpenVINO weights |
 | `HUGGINGFACE_TOKEN` | *(unset)* | Token for gated repositories if required |
-| `REQUEST_TIMEOUT` | `30.0` | HTTP timeout used by the client in seconds |
+| `REQUEST_TIMEOUT` | `45.0` | HTTP timeout used by the client in seconds |
+| `BASE_URL` | *(unset)* | Optional base URL used when building absolute asset links |
+| `OPENVINO_DEVICE` | `GPU` | Target device for inference (`GPU`, `CPU`, `AUTO`, etc.). Falls back to CPU if unavailable. |
 
 Use the CLI helper to manage model downloads manually:
 
@@ -70,4 +74,6 @@ python download_models.py --no-force
 
 - Mock mode uses `static/mock-image.svg` to keep the UI functioning without an inference server.
 - Model downloads rely on `huggingface_hub.snapshot_download`; cached assets live under `MODELS_CACHE_DIR/stable-diffusion`.
-- Adjust prompt defaults or UI behavior via `static/index.html` and `static/chat.js`.
+- Generated images are persisted under `GENERATED_IMAGES_DIR` and exposed at `/generated/<file>`.
+- The runtime uses `optimum-intel`'s `OVStableDiffusionPipeline`; first-call compilation per resolution can take a few seconds.
+- By default the pipeline targets Intel GPU. If the device is missing, the server logs a warning and runs on CPU.
